@@ -35,7 +35,7 @@ Note: If a specified font is not found, it will fall back to system defaults.
 
 New Features:
 - Customizable text formatting (font size, family, color, bold, stroke)
-- Watermark support with opacity and positioning control
+- Automatic watermark support (uses watermark.jpeg by default, YouTube-style positioning)
 - Transition effects between clips (none, fadeblack, crossfade)
 """
 from __future__ import annotations
@@ -418,18 +418,16 @@ def build_video(
     layers = [base] + subs
 
     if watermark_path is not None:
-        if not watermark_path.exists():
-            raise FileNotFoundError(f"Watermark file not found: {watermark_path}")
-        wm = ImageClip(str(watermark_path)).set_duration(base.duration)
-        # Resize watermark relative to base width (avoid PIL compatibility issues)
-        try:
-            wm = wm.resize(width=int(base.w * watermark_scale)).set_opacity(watermark_opacity)
-        except AttributeError:
-            # Fallback: use watermark at original size if resize fails due to PIL version
-            print("Warning: Could not resize watermark due to PIL version compatibility. Using original size.")
-            wm = wm.set_opacity(watermark_opacity)
-        # Position bottom-right with margin
-        wm = wm.set_position((base.w - wm.w - watermark_margin, base.h - wm.h - watermark_margin))
+        print(f"Adding watermark: {watermark_path}")
+        # Use the same approach as the reference implementation
+        wm = (
+            ImageClip(str(watermark_path))
+            .resize(height=80)  # Keep aspect ratio, ~80px height (YouTube style)
+            .set_opacity(watermark_opacity)
+            .set_duration(base.duration)
+            .set_position(("right", "bottom"))  # Built-in positioning like reference
+        )
+        print(f"Watermark added with 80px height and {watermark_opacity} opacity")
         layers.append(wm)
 
     final = CompositeVideoClip(layers)
@@ -471,10 +469,11 @@ def main():
     parser.add_argument("--stroke-width", type=int, default=None, help="Outline thickness for subtitles (default scales with video height)")
 
     # Watermark options
-    parser.add_argument("--watermark", type=str, default=None, help="Path to watermark image (e.g., watermark.jpeg)")
-    parser.add_argument("--watermark-opacity", type=float, default=0.8, help="Opacity of watermark (0-1, default 0.8)")
-    parser.add_argument("--watermark-scale", type=float, default=0.15, help="Watermark width as fraction of video width (default 0.15)")
-    parser.add_argument("--watermark-margin", type=int, default=20, help="Margin from bottom-right corner in pixels (default 20)")
+    parser.add_argument("--watermark", type=str, default="watermark.jpeg", help="Path to watermark image (default: watermark.jpeg)")
+    parser.add_argument("--watermark-opacity", type=float, default=0.35, help="Opacity of watermark (0-1, default 0.35 - YouTube style)")
+    parser.add_argument("--watermark-scale", type=float, default=0.06, help="Watermark width as fraction of video width (default 0.06 - YouTube style)")
+    parser.add_argument("--watermark-margin", type=int, default=15, help="Margin from bottom-right corner in pixels (default 15)")
+    parser.add_argument("--no-watermark", action="store_true", help="Disable watermark even if watermark.jpeg exists")
 
     # Transition options
     parser.add_argument("--transition", type=str, choices=["none", "fadeblack", "crossfade"], default="fadeblack", help="Transition type between clips")
@@ -503,7 +502,7 @@ def main():
         stroke_color=args.stroke_color,
         stroke_width=args.stroke_width,
         # watermark
-        watermark_path=Path(args.watermark) if args.watermark else None,
+        watermark_path=None if args.no_watermark else (Path(args.watermark) if Path(args.watermark).exists() else None),
         watermark_opacity=args.watermark_opacity,
         watermark_scale=args.watermark_scale,
         watermark_margin=args.watermark_margin,
