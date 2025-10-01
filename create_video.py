@@ -34,9 +34,10 @@ Requires: moviepy (will pull imageio-ffmpeg), pillow.
 Note: If a specified font is not found, it will fall back to system defaults.
 
 New Features:
-- Customizable text formatting (font size, family, color, bold, stroke)
+- Customizable text formatting with Google Fonts support (font size, family, color, bold, stroke)
 - Automatic watermark support (uses watermark.jpeg by default, YouTube-style positioning)
 - Transition effects between clips (none, fadeblack, crossfade)
+- Google Fonts integration (automatically downloads and caches fonts)
 """
 from __future__ import annotations
 
@@ -46,6 +47,10 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 # Configure ImageMagick path via environment variable
 import os
+import requests
+import zipfile
+import json
+from urllib.parse import quote
 os.environ['IMAGEMAGICK_BINARY'] = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
 from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip
 
@@ -63,6 +68,200 @@ from moviepy.video.fx.all import fadein, fadeout
 
 
 VideoSegment = Tuple[float, float, str]  # (start, end, text)
+
+# Google Fonts support
+GOOGLE_FONTS_API_KEY = os.environ.get('GOOGLE_FONTS_API_KEY')  # Optional, for rate limiting
+FONTS_CACHE_DIR = Path.home() / '.video_fonts_cache'
+GOOGLE_FONTS_API_URL = 'https://www.googleapis.com/webfonts/v1/webfonts'
+
+def ensure_fonts_cache_dir():
+    """Ensure the fonts cache directory exists."""
+    FONTS_CACHE_DIR.mkdir(exist_ok=True)
+    return FONTS_CACHE_DIR
+
+def get_popular_google_fonts():
+    """Return a curated list of popular Google Fonts."""
+    return [
+        'Roboto', 'Open Sans', 'Lato', 'Montserrat', 'Source Sans Pro',
+        'Raleway', 'Poppins', 'Oswald', 'Inter', 'Playfair Display',
+        'Merriweather', 'Nunito Sans', 'Ubuntu', 'Libre Franklin',
+        'Work Sans', 'Fira Sans', 'PT Sans', 'Crimson Text',
+        'Libre Baskerville', 'Cormorant Garamond', 'Quicksand',
+        'Dancing Script', 'Pacifico', 'Lobster', 'Bebas Neue',
+        'Anton', 'Righteous', 'Fredoka One', 'Comfortaa',
+        'Permanent Marker', 'Satisfy', 'Great Vibes', 'Kalam',
+        'Caveat', 'Indie Flower', 'Shadows Into Light', 'Amatic SC',
+        'Press Start 2P', 'Orbitron', 'Audiowide', 'Black Ops One'
+    ]
+
+def get_google_fonts_list():
+    """Get list of available Google Fonts."""
+    try:
+        cache_file = FONTS_CACHE_DIR / 'google_fonts_list.json'
+        
+        # Check if we have a cached list (refresh daily)
+        if cache_file.exists():
+            import time
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 86400:  # 24 hours
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        
+        # Try to fetch from Google Fonts API
+        params = {'sort': 'popularity'}
+        if GOOGLE_FONTS_API_KEY:
+            params['key'] = GOOGLE_FONTS_API_KEY
+        
+        try:
+            response = requests.get(GOOGLE_FONTS_API_URL, params=params, timeout=10)
+            if response.status_code == 200:
+                fonts_data = response.json()
+                # Cache the response
+                ensure_fonts_cache_dir()
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(fonts_data, f)
+                return fonts_data
+        except:
+            pass
+        
+        # Fallback to curated list
+        print("Using curated popular fonts list...")
+        popular_fonts = get_popular_google_fonts()
+        fallback_data = {
+            'items': [{'family': font, 'category': 'sans-serif'} for font in popular_fonts]
+        }
+        return fallback_data
+        
+    except Exception as e:
+        print(f"Warning: Failed to get Google Fonts list: {e}")
+        # Return curated list as last resort
+        popular_fonts = get_popular_google_fonts()
+        return {
+            'items': [{'family': font, 'category': 'sans-serif'} for font in popular_fonts]
+        }
+
+def download_google_font(font_family: str, font_weight: str = 'regular'):
+    """Download a Google Font and return the local font file path."""
+    try:
+        ensure_fonts_cache_dir()
+        
+        # Sanitize font name for filename
+        safe_name = re.sub(r'[^a-zA-Z0-9\-_]', '_', font_family.lower())
+        font_dir = FONTS_CACHE_DIR / safe_name
+        font_file = font_dir / f"{safe_name}_{font_weight}.ttf"
+        
+        # Return if already downloaded
+        if font_file.exists():
+            return str(font_file)
+        
+        print(f"Downloading Google Font: {font_family} ({font_weight})...")
+        
+        # Try direct Google Fonts CSS API approach
+        try:
+            # Format font name for URL
+            font_url_name = font_family.replace(' ', '+')
+            weight_param = ':wght@400' if font_weight == 'regular' else f':wght@{font_weight}'
+            
+            # Get CSS from Google Fonts
+            css_url = f"https://fonts.googleapis.com/css2?family={font_url_name}{weight_param}&display=swap"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            css_response = requests.get(css_url, headers=headers, timeout=10)
+            if css_response.status_code == 200:
+                css_content = css_response.text
+                
+                # Extract font URLs from CSS (try different formats)
+                font_urls = []
+                # Try TTF first
+                font_urls.extend(re.findall(r'url\((https://[^)]+\.ttf)\)', css_content))
+                # Try WOFF2 as fallback
+                if not font_urls:
+                    font_urls.extend(re.findall(r'url\((https://[^)]+\.woff2)\)', css_content))
+                # Try any font file
+                if not font_urls:
+                    font_urls.extend(re.findall(r'url\((https://fonts\.gstatic\.com/[^)]+)\)', css_content))
+                
+                if font_urls:
+                    font_url = font_urls[0]
+                    file_ext = 'ttf' if font_url.endswith('.ttf') else 'woff2'
+                    
+                    # Update the local filename
+                    font_file = font_dir / f"{safe_name}_{font_weight}.{file_ext}"
+                    
+                    # Download the font file
+                    font_response = requests.get(font_url, headers=headers, timeout=30)
+                    if font_response.status_code == 200:
+                        font_dir.mkdir(exist_ok=True)
+                        with open(font_file, 'wb') as f:
+                            f.write(font_response.content)
+                        print(f"Downloaded {file_ext.upper()} font to: {font_file}")
+                        return str(font_file)
+                else:
+                    print(f"Could not find font URL in CSS for {font_family}")
+                    # Debug: show part of CSS content
+                    print(f"CSS content preview: {css_content[:200]}...")
+            else:
+                print(f"Failed to get CSS for {font_family}: HTTP {css_response.status_code}")
+        except Exception as e:
+            print(f"Direct download failed: {e}")
+        
+        # Fallback: Try the API approach if available
+        fonts_data = get_google_fonts_list()
+        if fonts_data:
+            # Find the font in the list
+            font_info = None
+            for font in fonts_data.get('items', []):
+                if font['family'].lower() == font_family.lower():
+                    font_info = font
+                    break
+            
+            if font_info and 'files' in font_info:
+                files = font_info['files']
+                if font_weight in files:
+                    font_url = files[font_weight]
+                    response = requests.get(font_url, timeout=30)
+                    if response.status_code == 200:
+                        font_dir.mkdir(exist_ok=True)
+                        with open(font_file, 'wb') as f:
+                            f.write(response.content)
+                        print(f"Downloaded font via API to: {font_file}")
+                        return str(font_file)
+        
+        print(f"Could not download font '{font_family}'")
+        return None
+            
+    except Exception as e:
+        print(f"Error downloading Google Font '{font_family}': {e}")
+        return None
+
+def get_font_path(font_family: str, font_bold: bool = False) -> Optional[str]:
+    """Get the path to a font file, downloading from Google Fonts if needed."""
+    if not font_family:
+        return None
+    
+    # Check if it's a local font file path
+    if os.path.exists(font_family):
+        return font_family
+    
+    # Try system fonts first (common ones)
+    system_fonts = {
+        'arial': 'C:\\Windows\\Fonts\\arial.ttf',
+        'times': 'C:\\Windows\\Fonts\\times.ttf',
+        'calibri': 'C:\\Windows\\Fonts\\calibri.ttf',
+        'segoe ui': 'C:\\Windows\\Fonts\\segoeui.ttf',
+    }
+    
+    if font_family.lower() in system_fonts:
+        system_path = system_fonts[font_family.lower()]
+        if os.path.exists(system_path):
+            return system_path
+    
+    # Try to download from Google Fonts
+    weight = '700' if font_bold else 'regular'
+    return download_google_font(font_family, weight)
 
 
 def time_to_seconds(s: str) -> float:
@@ -248,17 +447,38 @@ def make_subtitle_clip(
     stroke_w = stroke_width or max(2, int(base_h * 0.004))
     max_width = int(base_w * 0.9)
 
-    # Determine font list based on preferences
+    # Try to get the specified font (including Google Fonts)
     last_error: Optional[Exception] = None
-    fonts_to_try = []
+    font_file_path = None
     
     if font_family:
-        fonts_to_try.append(font_family)
+        print(f"Attempting to use font: {font_family}")
+        font_file_path = get_font_path(font_family, font_bold)
+        
+        if font_file_path:
+            try:
+                print(f"Using font file: {font_file_path}")
+                clip = TextClip(
+                    txt,
+                    fontsize=fontsize,
+                    color=font_color,
+                    font=font_file_path,
+                    method="caption",
+                    size=(max_width, None),  # wrap if needed
+                    align="center",
+                    stroke_color=stroke_color,
+                    stroke_width=stroke_w,
+                ).set_position("center").set_start(start).set_duration(duration)
+                return clip
+            except Exception as e:
+                last_error = e
+                print(f"Failed to use font file {font_file_path}: {e}")
     
+    # Fallback to system fonts
+    fonts_to_try = []
     if font_bold:
         fonts_to_try.extend(choose_font_candidates())
     else:
-        # Add regular font options
         fonts_to_try.extend([
             "Arial", "Helvetica", "Verdana", "Segoe UI", 
             "DejaVu Sans", "Liberation Sans", "Calibri"
@@ -462,7 +682,7 @@ def main():
 
     # Text formatting options
     parser.add_argument("--font-size", type=int, default=None, help="Subtitle font size (default scales with video height)")
-    parser.add_argument("--font-family", type=str, default=None, help="Subtitle font family (e.g., 'Arial', 'Impact')")
+    parser.add_argument("--font-family", type=str, default=None, help="Subtitle font family (e.g., 'Arial', 'Roboto', 'Open Sans') - supports Google Fonts")
     parser.add_argument("--font-color", type=str, default="white", help="Subtitle font color (default: white)")
     parser.add_argument("--font-bold", action="store_true", help="Use bold font variants when available")
     parser.add_argument("--stroke-color", type=str, default="black", help="Outline color for subtitles (default: black)")
@@ -479,7 +699,27 @@ def main():
     parser.add_argument("--transition", type=str, choices=["none", "fadeblack", "crossfade"], default="fadeblack", help="Transition type between clips")
     parser.add_argument("--transition-duration", type=float, default=0.5, help="Transition duration in seconds (default 0.5)")
 
+    # Utility options
+    parser.add_argument("--list-fonts", action="store_true", help="List popular Google Fonts and exit")
+
     args = parser.parse_args()
+
+    # Handle font listing
+    if args.list_fonts:
+        print("Fetching popular Google Fonts...")
+        fonts_data = get_google_fonts_list()
+        if fonts_data:
+            print("\nPopular Google Fonts (top 50):")
+            print("=" * 40)
+            for i, font in enumerate(fonts_data.get('items', [])[:50], 1):
+                family = font['family']
+                category = font.get('category', 'unknown')
+                print(f"{i:2d}. {family} ({category})")
+            print("\nUsage: --font-family 'Font Name'")
+            print("Example: --font-family 'Roboto' --font-bold")
+        else:
+            print("Could not fetch Google Fonts list. Check your internet connection.")
+        return
 
     clips_dir = Path(args.clips_dir)
     audio_path = Path(args.audio)
