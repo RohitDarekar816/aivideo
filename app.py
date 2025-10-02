@@ -30,8 +30,8 @@ def format_timestamp(seconds):
 
 # Example usage
 if __name__ == "__main__":
-    audio_file = "analyzed_filepathX75.wav"  # Change this to your actual file
-    output_file = "transcript_output.txt"
+    audio_file = "slowed_audio_ffmpeg.wav"  # Change this to your actual file
+    output_file = "slowed_output.txt"
 
     if os.path.exists(audio_file):
         transcribe_audio_with_timestamps(audio_file, output_file)
