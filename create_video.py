@@ -49,6 +49,17 @@ import os
 # Use environment variable if set (for Docker), otherwise Windows default
 if 'IMAGEMAGICK_BINARY' not in os.environ:
     os.environ['IMAGEMAGICK_BINARY'] = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
+
+# Fix for PIL.Image.ANTIALIAS deprecation in newer Pillow versions
+# This ensures compatibility with MoviePy's resize functionality
+try:
+    from PIL import Image
+    # Check if ANTIALIAS exists, if not, add it as an alias to LANCZOS
+    if not hasattr(Image, 'ANTIALIAS'):
+        Image.ANTIALIAS = Image.Resampling.LANCZOS
+except ImportError:
+    pass
+
 from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip
 
 from moviepy.editor import (
@@ -243,6 +254,7 @@ def make_subtitle_clip(
     base_h: int,
     font_size: Optional[int] = None,
     font_family: Optional[str] = None,
+    font_path: Optional[str] = None,
     font_color: str = "white",
     font_bold: bool = True,
     stroke_color: str = "black",
@@ -258,17 +270,30 @@ def make_subtitle_clip(
 
     # Create text clip using MoviePy's default font handling
     font_to_use = None
-    
-    if font_family:
+
+    # If a direct font file path is provided and exists, prefer it
+    if font_path and Path(font_path).exists():
+        font_to_use = font_path
+    elif font_family:
         # Try the user-specified font first
         font_to_use = font_family
     elif font_bold:
-        # Use common bold fonts if bold is requested
-        bold_fonts = ["Arial Black", "Impact", "Arial-Bold", "Helvetica-Bold", "Verdana-Bold"]
+        # Use common bold fonts if bold is requested (include Linux-friendly options)
+        bold_fonts = [
+            "Arial Black",
+            "Impact",
+            "Arial-Bold",
+            "Helvetica-Bold",
+            "Verdana-Bold",
+            "DejaVuSans-Bold",
+            "DejaVu Sans Bold",
+            "LiberationSans-Bold",
+            "Liberation Sans Bold",
+        ]
         for bold_font in bold_fonts:
             try:
                 # Test if this font works
-                test_clip = TextClip(
+                _ = TextClip(
                     "test",
                     fontsize=fontsize,
                     color=font_color,
@@ -295,7 +320,7 @@ def make_subtitle_clip(
                 align="center",
                 stroke_color=stroke_color,
                 stroke_width=stroke_w,
-            ).set_position("center").set_start(start).set_duration(duration)
+            ).set_position(("center","center")).set_start(start).set_duration(duration)
         else:
             print("Using MoviePy default font")
             clip = TextClip(
@@ -307,7 +332,7 @@ def make_subtitle_clip(
                 align="center",
                 stroke_color=stroke_color,
                 stroke_width=stroke_w,
-            ).set_position("center").set_start(start).set_duration(duration)
+            ).set_position(("center","center")).set_start(start).set_duration(duration)
         return clip
     except Exception as e:
         print(f"Failed to create TextClip with specified font, trying default: {e}")
@@ -324,7 +349,7 @@ def make_subtitle_clip(
             align="center",
             stroke_color=stroke_color,
             stroke_width=stroke_w,
-        ).set_position("center").set_start(start).set_duration(duration)
+        ).set_position(("center","center")).set_start(start).set_duration(duration)
         return clip
     except Exception as final_error:
         # If even default font fails, report but continue without this cue
@@ -389,6 +414,7 @@ def build_video(
     # Text formatting options
     font_size: Optional[int] = None,
     font_family: Optional[str] = None,
+    font_path: Optional[str] = None,
     font_color: str = "white",
     font_bold: bool = True,
     stroke_color: str = "black",
@@ -431,6 +457,7 @@ def build_video(
             txt, s, e, base_w=base.w, base_h=base.h,
             font_size=font_size,
             font_family=font_family,
+            font_path=font_path,
             font_color=font_color,
             font_bold=font_bold,
             stroke_color=stroke_color,
@@ -494,6 +521,7 @@ def main():
     # Text formatting options
     parser.add_argument("--font-size", type=int, default=None, help="Subtitle font size (default scales with video height)")
     parser.add_argument("--font-family", type=str, default=None, help="Subtitle font family (e.g., 'Arial', 'Impact', 'Arial Black')")
+    parser.add_argument("--font-path", type=str, default=None, help="Path to a .ttf/.otf font file inside the container (overrides --font-family if provided)")
     parser.add_argument("--font-color", type=str, default="white", help="Subtitle font color (default: white)")
     parser.add_argument("--font-bold", action="store_true", help="Use bold font variants when available")
     parser.add_argument("--stroke-color", type=str, default="black", help="Outline color for subtitles (default: black)")
@@ -530,6 +558,7 @@ def main():
         # text formatting
         font_size=args.font_size,
         font_family=args.font_family,
+        font_path=args.font_path,
         font_color=args.font_color,
         font_bold=bool(args.font_bold),
         stroke_color=args.stroke_color,

@@ -1,0 +1,24 @@
+services:
+  video-processor:
+    build: .
+    container_name: video-processor
+    volumes:
+      # Mount your local directories to container
+      - ./clips:/app/clips
+      - ./output:/app/output
+      - ./smwatermark.png:/app/smwatermark.png:ro
+      - ./slowed_audio_ffmpeg.wav:/app/slowed_audio_ffmpeg.wav:ro
+      - ./slowed_output.txt:/app/slowed_output.txt:ro
+      # Optional: mount local fonts into container for custom fonts like Impact.ttf
+      - ./fonts:/usr/share/fonts/truetype/custom:ro
+    working_dir: /app
+    # Override default command - you can specify your own arguments
+    # command: ["python", "create_video.py", "--mode", "test"]
+
+    # For interactive use
+    stdin_open: true
+    tty: true
+
+    # Environment variables (optional)
+    environment:
+      - PYTHONUNBUFFERED=1
